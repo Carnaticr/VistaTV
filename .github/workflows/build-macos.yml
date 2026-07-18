@@ -1,0 +1,67 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to attach the DMG to (leave empty to only upload a build artifact)"
+        required: false
+        default: "v0.1.0"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    # macos-latest = Apple Silicon (aarch64). Covers M1/M2/M3/M4 Macs.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The libmpv plugin loads the system libmpv on macOS.
+      - name: Install mpv (libmpv)
+        run: brew install mpv
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # Downloads libmpv-wrapper.dylib into src-tauri/lib/ (gitignored).
+      - name: Fetch libmpv wrapper
+        run: npx tauri-plugin-libmpv-api setup-lib
+
+      - name: Build DMG
+        run: npm run tauri build -- --bundles dmg
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VistaTV-macos-aarch64
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Attach DMG to release
+        if: ${{ github.event_name == 'push' || inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}"
+          for f in src-tauri/target/release/bundle/dmg/*.dmg; do
+            base="$(basename "$f" .dmg)"
+            cp "$f" "${base}_aarch64.dmg"
+            gh release upload "$TAG" "${base}_aarch64.dmg" --clobber
+          done
