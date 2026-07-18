@@ -60,8 +60,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}"
-          for f in src-tauri/target/release/bundle/dmg/*.dmg; do
-            base="$(basename "$f" .dmg)"
-            cp "$f" "${base}_aarch64.dmg"
-            gh release upload "$TAG" "${base}_aarch64.dmg" --clobber
-          done
+          gh release upload "$TAG" src-tauri/target/release/bundle/dmg/*.dmg --clobber
