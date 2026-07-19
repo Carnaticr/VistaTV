@@ -12,17 +12,29 @@ use serde_json::Value;
 
 use crate::playlist::ParsedChannel;
 
-/// Many IPTV/Xtream panels reject unknown User-Agents with odd 5xx codes,
-/// so we present a common player UA for all provider/playlist requests.
-pub const UA: &str = "VLC/3.0.20 LibVLC/3.0.20";
+/// Many IPTV/Xtream panels reject unknown User-Agents with odd 5xx codes
+/// (513 is common), and different panels whitelist different players. We try
+/// these in order until one is accepted. okhttp is what most Android IPTV
+/// apps present and is the most widely whitelisted.
+pub const UA_CANDIDATES: &[&str] = &[
+    "okhttp/4.9.3",
+    "VLC/3.0.20 LibVLC/3.0.20",
+    "IPTVSmartersPro",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+];
 
-/// A shared HTTP agent: sends our UA and lets us read error-status bodies.
-pub fn agent() -> ureq::Agent {
+/// Build an agent with a specific UA that lets us read error-status bodies.
+pub fn agent_with(ua: &str) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
-        .user_agent(UA)
+        .user_agent(ua)
         .build();
     ureq::Agent::new_with_config(config)
+}
+
+/// Default agent (first candidate UA) — used for plain M3U downloads.
+pub fn agent() -> ureq::Agent {
+    agent_with(UA_CANDIDATES[0])
 }
 
 /// Ensure the host has a scheme and no trailing slash.
@@ -58,24 +70,28 @@ fn val_str(v: &Value) -> String {
     }
 }
 
-fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
+/// Raw GET: network errors are `Err`; any HTTP status is `Ok((status, body))`.
+fn get_body(agent: &ureq::Agent, url: &str) -> Result<(u16, String), String> {
     let mut resp = agent.get(url).call().map_err(|e| e.to_string())?;
-    let status = resp.status();
+    let status = resp.status().as_u16();
     let mut body = String::new();
     resp.body_mut()
         .as_reader()
         .take(256 * 1024 * 1024)
         .read_to_string(&mut body)
         .map_err(|e| e.to_string())?;
+    Ok((status, body))
+}
+
+fn parse_json(status: u16, body: &str) -> Result<Value, String> {
     let snippet: String = body.trim().chars().take(180).collect();
-    if !status.is_success() {
+    if !(200..300).contains(&status) {
         return Err(format!(
-            "provider returned HTTP {}{}",
-            status.as_u16(),
+            "provider returned HTTP {status}{}",
             if snippet.is_empty() { String::new() } else { format!(" — {snippet}") }
         ));
     }
-    serde_json::from_str(&body).map_err(|_| {
+    serde_json::from_str(body).map_err(|_| {
         format!(
             "provider did not return JSON (got: {})",
             if snippet.is_empty() { "empty response".into() } else { snippet }
@@ -83,14 +99,38 @@ fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
     })
 }
 
+fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value, String> {
+    let (status, body) = get_body(agent, url)?;
+    parse_json(status, &body)
+}
+
 /// Authenticate and fetch all live streams as channels.
 pub fn fetch_live(host: &str, user: &str, pass: &str) -> Result<Vec<ParsedChannel>, String> {
     let base = normalize_base(host);
     let (u, p) = (enc(user), enc(pass));
-    let agent = agent();
+    let auth_url = format!("{base}/player_api.php?username={u}&password={p}");
 
-    // 1. Authenticate.
-    let info = get_json(&agent, &format!("{base}/player_api.php?username={u}&password={p}"))?;
+    // 1. Authenticate — probing user-agents until the panel accepts one.
+    //    Network-level failures abort immediately (a different UA won't help).
+    let mut agent = None;
+    let mut info = None;
+    let mut last_err = String::new();
+    for ua in UA_CANDIDATES {
+        let candidate = agent_with(ua);
+        let (status, body) = get_body(&candidate, &auth_url)?;
+        match parse_json(status, &body) {
+            Ok(v) => {
+                agent = Some(candidate);
+                info = Some(v);
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    let (agent, info) = match (agent, info) {
+        (Some(a), Some(i)) => (a, i),
+        _ => return Err(format!("{last_err} (tried {} user-agents)", UA_CANDIDATES.len())),
+    };
     let authed = info
         .get("user_info")
         .and_then(|ui| ui.get("auth"))

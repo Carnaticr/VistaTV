@@ -37,6 +37,7 @@
 
   // ---- Player state ----
   let error = $state("");
+  let initError = $state("");
   let ready = $state(false);
   let paused = $state(true);
   let position = $state(0);
@@ -84,9 +85,13 @@
     ["volume", "double"],
   ] as const satisfies MpvObservableProperty[];
 
+  // macOS: gpu-next wants Vulkan/MoltenVK which isn't in the bundle — use
+  // mpv's native default vo (gpu/cocoa) there instead.
+  const isMac = navigator.userAgent.includes("Mac");
+
   const mpvConfig: MpvConfig = {
     initialOptions: {
-      vo: "gpu-next",
+      ...(isMac ? {} : { vo: "gpu-next" }),
       hwdec: "auto-safe",
       "keep-open": "yes",
       "force-window": "yes",
@@ -175,7 +180,9 @@
       window.addEventListener("keydown", onKeydown);
       window.addEventListener("mousemove", revealControls);
     } catch (e) {
-      error = `mpv init failed: ${e}`;
+      initError = `mpv failed to start: ${e}`;
+      error = initError;
+      console.error(initError);
     }
 
     await loadSources();
@@ -325,6 +332,12 @@
 
   // ---- Playback ----
   async function playChannel(c: Channel) {
+    if (!ready) {
+      // Surface the original startup failure instead of a cryptic
+      // "instance not found" from the plugin.
+      error = initError || "player is still starting — try again in a moment";
+      return;
+    }
     nowPlaying = c;
     await guard(async () => {
       await command("loadfile", [c.url]);
