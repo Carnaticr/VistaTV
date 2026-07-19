@@ -5,6 +5,18 @@ with **libmpv** for playback (HEVC/4K/HDR, hardware decode). Fullscreen/immersiv
 (F / double-click / Esc), keyboard shortcuts (Space, ←/→), and buffered streaming with
 auto-reconnect. (App identifier remains `com.arun4.vista-iptv` to preserve existing data.)
 
+## Download
+
+Grab the latest installers from **[Releases](https://github.com/Carnaticr/VistaTV/releases)**:
+
+| Platform | File | Notes |
+|---|---|---|
+| Windows x64 | `Vista.TV_…_x64-setup.exe` | SmartScreen warns (unsigned) → **More info → Run anyway** |
+| Windows x64 (MSI) | `Vista.TV_…_x64_en-US.msi` | For silent/enterprise deploy |
+| macOS (Apple Silicon) | `Vista.TV_…_aarch64.dmg` | **Self-contained** (libmpv bundled, no Homebrew). Unsigned → right-click → **Open**. CI-built, not yet verified on hardware |
+
+All data (channels, favorites, recents, Xtream credentials) stays on your machine.
+
 ## Status
 
 **Milestone 1 — mpv playback proof (done).**
