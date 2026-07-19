@@ -63,7 +63,10 @@ jobs:
           mkdir -p "$LIBDIR"
 
           cp src-tauri/lib/libmpv-wrapper.dylib "$LIBDIR/"
-          ln -sf /opt/homebrew/lib/libmpv.2.dylib "$LIBDIR/libmpv.dylib"
+          # Use the keg's stable /opt path — it exists whenever the mpv formula
+          # is installed, even if `brew link` never linked it into prefix/lib
+          # (which is exactly what broke on a real user machine).
+          ln -sf /opt/homebrew/opt/mpv/lib/libmpv.2.dylib "$LIBDIR/libmpv.dylib"
 
           # Drop the redundant resource copy of the wrapper.
           rm -rf "$APP/Contents/Resources/lib"
