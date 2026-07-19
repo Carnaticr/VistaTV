@@ -85,15 +85,9 @@
     ["volume", "double"],
   ] as const satisfies MpvObservableProperty[];
 
-  // macOS: gpu-next wants Vulkan/MoltenVK which isn't in the bundle — use
-  // mpv's native default vo (gpu/cocoa) there instead.
-  const isMac = navigator.userAgent.includes("Mac");
-
   const mpvConfig: MpvConfig = {
     initialOptions: {
       vo: "gpu-next",
-      // macOS: keep VO logging on this round to confirm MoltenVK initializes.
-      ...(isMac ? { terminal: "yes", "msg-level": "vo=v" } : {}),
       hwdec: "auto-safe",
       "keep-open": "yes",
       "force-window": "yes",

@@ -33,8 +33,10 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install mpv + MoltenVK + dylibbundler
-        run: brew install mpv molten-vk dylibbundler
+      # Installed so the libmpv symlink target exists on the runner (for
+      # codesign); end users must have `brew install mpv` too.
+      - name: Install mpv
+        run: brew install mpv
 
       - name: Install frontend dependencies
         run: npm ci
@@ -46,14 +48,14 @@ jobs:
       - name: Build app bundle
         run: npm run tauri build -- --bundles app
 
-      # Make the .app self-contained:
-      # - the tauri plugin looks for libmpv-wrapper.dylib in exe_dir and exe_dir/lib
-      #   (Contents/MacOS[/lib]), NOT in Contents/Resources where Tauri puts resources;
-      # - the wrapper dlopens "<its own dir>/libmpv.dylib" first, so a patched libmpv
-      #   placed beside it is picked up with no further configuration;
-      # - dylibbundler copies libmpv's whole homebrew dependency closure and rewrites
-      #   all install names to @executable_path/lib so nothing references /opt/homebrew.
-      - name: Embed libmpv into the app bundle
+      # Basic (system-mpv) build. The app is NOT self-contained: it uses the
+      # user's Homebrew-installed libmpv (and its MoltenVK) at runtime.
+      # - the plugin looks for libmpv-wrapper.dylib in Contents/MacOS[/lib],
+      #   NOT Contents/Resources where Tauri puts bundled resources;
+      # - the wrapper dlopens "<its own dir>/libmpv.dylib", so we symlink that
+      #   to the Homebrew libmpv. The runner has mpv installed too, so the link
+      #   is not dangling when codesign seals the bundle.
+      - name: Set up mpv wrapper (system libmpv)
         run: |
           set -euxo pipefail
           APP="src-tauri/target/release/bundle/macos/Vista TV.app"
@@ -61,90 +63,16 @@ jobs:
           mkdir -p "$LIBDIR"
 
           cp src-tauri/lib/libmpv-wrapper.dylib "$LIBDIR/"
-          cp "$(brew --prefix mpv)/lib/libmpv.2.dylib" "$LIBDIR/libmpv.dylib"
-          # dylibbundler only rewrites IDs of libs it copies itself; fix ours.
-          install_name_tool -id '@executable_path/lib/libmpv.dylib' "$LIBDIR/libmpv.dylib"
+          ln -sf /opt/homebrew/lib/libmpv.2.dylib "$LIBDIR/libmpv.dylib"
 
-          # MoltenVK: mpv embeds video on macOS only via Vulkan, which needs the
-          # MoltenVK (Vulkan->Metal) driver. Bundle it + an ICD manifest whose
-          # relative library_path resolves to the co-located dylib. The Vulkan
-          # loader itself is already pulled in as a libmpv dependency.
-          cp "$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" "$LIBDIR/"
-          install_name_tool -id '@executable_path/lib/libMoltenVK.dylib' "$LIBDIR/libMoltenVK.dylib"
-          # The ICD manifest is a data file: it must live in Resources, not under
-          # Contents/MacOS (codesign rejects non-code files there). library_path
-          # is resolved relative to the manifest, so point it back at the dylib.
-          mkdir -p "$APP/Contents/Resources"
-          cat > "$APP/Contents/Resources/MoltenVK_icd.json" <<'JSON'
-          {
-              "file_format_version": "1.0.0",
-              "ICD": {
-                  "library_path": "../MacOS/lib/libMoltenVK.dylib",
-                  "api_version": "1.2.0",
-                  "is_portability_driver": true
-              }
-          }
-          JSON
-
-          dylibbundler -cd -b \
-            -x "$LIBDIR/libmpv.dylib" \
-            -x "$LIBDIR/libMoltenVK.dylib" \
-            -d "$LIBDIR" \
-            -p '@executable_path/lib' \
-            -s "$(brew --prefix)/lib"
-
-          # Drop the now-redundant resource copy of the wrapper.
+          # Drop the redundant resource copy of the wrapper.
           rm -rf "$APP/Contents/Resources/lib"
 
-          echo "--- bundled dylibs ---"
-          ls -la "$LIBDIR" | head -80
-
-          # Fail if anything still points at homebrew.
-          if otool -L "$LIBDIR"/*.dylib | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
-            echo "ERROR: unresolved homebrew references remain" >&2
-            exit 1
-          fi
-
-          # dylibbundler can add the same LC_RPATH more than once; recent dyld
-          # refuses to load a dylib with duplicate rpaths ("duplicate LC_RPATH
-          # '@executable_path/lib/'"), which broke libmpv load. De-duplicate the
-          # LC_RPATH entries of every bundled dylib.
-          echo "--- de-duplicating LC_RPATH entries ---"
-          dedup_rpaths() {
-            f="$1"
-            otool -l "$f" | awk '
-              $1=="cmd" && $2=="LC_RPATH" {want=1; next}
-              want && $1=="path" {print $2; want=0}
-            ' | sort | uniq -d | while IFS= read -r dup; do
-              [ -z "$dup" ] && continue
-              cnt=$(otool -l "$f" | awk -v d="$dup" '
-                $1=="cmd" && $2=="LC_RPATH" {want=1; next}
-                want && $1=="path" {if ($2==d) c++; want=0}
-                END{print c+0}')
-              while [ "$cnt" -gt 1 ]; do
-                install_name_tool -delete_rpath "$dup" "$f"
-                cnt=$((cnt-1))
-              done
-            done
-          }
-          for f in "$LIBDIR"/*.dylib; do dedup_rpaths "$f"; done
-          echo "libmpv.dylib rpaths after dedup:"
-          otool -l "$LIBDIR/libmpv.dylib" | awk '$1=="cmd"&&$2=="LC_RPATH"{want=1;next} want&&$1=="path"{print "  "$2;want=0}'
-
-          # install_name_tool / dylibbundler invalidate each dylib's signature,
-          # and arm64 refuses to load a dylib with an invalid/missing signature
-          # (this is what caused "failed to create mpv instance"). codesign --deep
-          # does NOT reliably reach loose dylibs under Contents/MacOS/lib, so sign
-          # every one of them individually (deepest code first), then the app.
-          echo "--- re-signing bundled dylibs ---"
-          find "$LIBDIR" -name '*.dylib' -exec codesign --force --sign - {} \;
+          # arm64 requires valid signatures; sign the wrapper, exe, then the app.
+          codesign --force --sign - "$LIBDIR/libmpv-wrapper.dylib"
           codesign --force --sign - "$APP/Contents/MacOS/vista-iptv"
           codesign --force --sign - "$APP"
-
-          echo "--- verifying signatures + load ---"
           codesign --verify --verbose=2 "$APP"
-          # Every bundled dylib must now report a valid signature.
-          for d in "$LIBDIR"/*.dylib; do codesign --verify --strict "$d"; done
 
       - name: Create DMG
         run: |

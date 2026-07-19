@@ -4,19 +4,19 @@ mod xtream;
 
 use tauri::Manager;
 
-/// macOS: mpv embeds video via Vulkan (MoltenVK). Point the bundled Vulkan
-/// loader at our bundled MoltenVK ICD so `vo=gpu-next` can create a context.
+/// macOS: mpv embeds video via Vulkan (MoltenVK). Point the loader at the
+/// Homebrew-installed MoltenVK ICD so `vo=gpu-next` can create a context.
 /// Must run before libvulkan is loaded (i.e. before mpv init).
 #[cfg(target_os = "macos")]
 fn set_vulkan_icd() {
-    // exe is Contents/MacOS/vista-iptv; the manifest is in Contents/Resources.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
-            let icd = contents.join("Resources").join("MoltenVK_icd.json");
-            if icd.exists() {
-                std::env::set_var("VK_ICD_FILENAMES", &icd);
-                std::env::set_var("VK_DRIVER_FILES", &icd);
-            }
+    for icd in [
+        "/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json",
+        "/usr/local/share/vulkan/icd.d/MoltenVK_icd.json",
+    ] {
+        if std::path::Path::new(icd).exists() {
+            std::env::set_var("VK_ICD_FILENAMES", icd);
+            std::env::set_var("VK_DRIVER_FILES", icd);
+            break;
         }
     }
 }
