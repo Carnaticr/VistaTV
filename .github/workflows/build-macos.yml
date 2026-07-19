@@ -71,11 +71,15 @@ jobs:
           # loader itself is already pulled in as a libmpv dependency.
           cp "$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" "$LIBDIR/"
           install_name_tool -id '@executable_path/lib/libMoltenVK.dylib' "$LIBDIR/libMoltenVK.dylib"
-          cat > "$LIBDIR/MoltenVK_icd.json" <<'JSON'
+          # The ICD manifest is a data file: it must live in Resources, not under
+          # Contents/MacOS (codesign rejects non-code files there). library_path
+          # is resolved relative to the manifest, so point it back at the dylib.
+          mkdir -p "$APP/Contents/Resources"
+          cat > "$APP/Contents/Resources/MoltenVK_icd.json" <<'JSON'
           {
               "file_format_version": "1.0.0",
               "ICD": {
-                  "library_path": "libMoltenVK.dylib",
+                  "library_path": "../MacOS/lib/libMoltenVK.dylib",
                   "api_version": "1.2.0",
                   "is_portability_driver": true
               }

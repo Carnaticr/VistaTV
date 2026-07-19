@@ -9,9 +9,10 @@ use tauri::Manager;
 /// Must run before libvulkan is loaded (i.e. before mpv init).
 #[cfg(target_os = "macos")]
 fn set_vulkan_icd() {
+    // exe is Contents/MacOS/vista-iptv; the manifest is in Contents/Resources.
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let icd = dir.join("lib").join("MoltenVK_icd.json");
+        if let Some(contents) = exe.parent().and_then(|p| p.parent()) {
+            let icd = contents.join("Resources").join("MoltenVK_icd.json");
             if icd.exists() {
                 std::env::set_var("VK_ICD_FILENAMES", &icd);
                 std::env::set_var("VK_DRIVER_FILES", &icd);
