@@ -91,11 +91,9 @@
 
   const mpvConfig: MpvConfig = {
     initialOptions: {
-      // macOS: don't force gpu-next (needs MoltenVK); log the VO to stderr so a
-      // terminal run reveals why video won't attach to the window.
-      ...(isMac
-        ? { terminal: "yes", "msg-level": "all=v" }
-        : { vo: "gpu-next" }),
+      vo: "gpu-next",
+      // macOS: keep VO logging on this round to confirm MoltenVK initializes.
+      ...(isMac ? { terminal: "yes", "msg-level": "vo=v" } : {}),
       hwdec: "auto-safe",
       "keep-open": "yes",
       "force-window": "yes",

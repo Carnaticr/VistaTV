@@ -33,8 +33,8 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install mpv + dylibbundler
-        run: brew install mpv dylibbundler
+      - name: Install mpv + MoltenVK + dylibbundler
+        run: brew install mpv molten-vk dylibbundler
 
       - name: Install frontend dependencies
         run: npm ci
@@ -65,8 +65,26 @@ jobs:
           # dylibbundler only rewrites IDs of libs it copies itself; fix ours.
           install_name_tool -id '@executable_path/lib/libmpv.dylib' "$LIBDIR/libmpv.dylib"
 
+          # MoltenVK: mpv embeds video on macOS only via Vulkan, which needs the
+          # MoltenVK (Vulkan->Metal) driver. Bundle it + an ICD manifest whose
+          # relative library_path resolves to the co-located dylib. The Vulkan
+          # loader itself is already pulled in as a libmpv dependency.
+          cp "$(brew --prefix molten-vk)/lib/libMoltenVK.dylib" "$LIBDIR/"
+          install_name_tool -id '@executable_path/lib/libMoltenVK.dylib' "$LIBDIR/libMoltenVK.dylib"
+          cat > "$LIBDIR/MoltenVK_icd.json" <<'JSON'
+          {
+              "file_format_version": "1.0.0",
+              "ICD": {
+                  "library_path": "libMoltenVK.dylib",
+                  "api_version": "1.2.0",
+                  "is_portability_driver": true
+              }
+          }
+          JSON
+
           dylibbundler -cd -b \
             -x "$LIBDIR/libmpv.dylib" \
+            -x "$LIBDIR/libMoltenVK.dylib" \
             -d "$LIBDIR" \
             -p '@executable_path/lib' \
             -s "$(brew --prefix)/lib"
