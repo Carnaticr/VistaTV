@@ -83,9 +83,20 @@ jobs:
             exit 1
           fi
 
-          # Modifying the bundle invalidated the ad-hoc signature; re-sign.
-          codesign --force --deep --sign - "$APP"
+          # install_name_tool / dylibbundler invalidate each dylib's signature,
+          # and arm64 refuses to load a dylib with an invalid/missing signature
+          # (this is what caused "failed to create mpv instance"). codesign --deep
+          # does NOT reliably reach loose dylibs under Contents/MacOS/lib, so sign
+          # every one of them individually (deepest code first), then the app.
+          echo "--- re-signing bundled dylibs ---"
+          find "$LIBDIR" -name '*.dylib' -exec codesign --force --sign - {} \;
+          codesign --force --sign - "$APP/Contents/MacOS/vista-iptv"
+          codesign --force --sign - "$APP"
+
+          echo "--- verifying signatures + load ---"
           codesign --verify --verbose=2 "$APP"
+          # Every bundled dylib must now report a valid signature.
+          for d in "$LIBDIR"/*.dylib; do codesign --verify --strict "$d"; done
 
       - name: Create DMG
         run: |
