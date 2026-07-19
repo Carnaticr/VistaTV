@@ -62,6 +62,8 @@ jobs:
 
           cp src-tauri/lib/libmpv-wrapper.dylib "$LIBDIR/"
           cp "$(brew --prefix mpv)/lib/libmpv.2.dylib" "$LIBDIR/libmpv.dylib"
+          # dylibbundler only rewrites IDs of libs it copies itself; fix ours.
+          install_name_tool -id '@executable_path/lib/libmpv.dylib' "$LIBDIR/libmpv.dylib"
 
           dylibbundler -cd -b \
             -x "$LIBDIR/libmpv.dylib" \
