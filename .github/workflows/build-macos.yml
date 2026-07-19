@@ -33,9 +33,8 @@ jobs:
         with:
           workspaces: src-tauri
 
-      # The libmpv plugin loads the system libmpv on macOS.
-      - name: Install mpv (libmpv)
-        run: brew install mpv
+      - name: Install mpv + dylibbundler
+        run: brew install mpv dylibbundler
 
       - name: Install frontend dependencies
         run: npm ci
@@ -44,14 +43,64 @@ jobs:
       - name: Fetch libmpv wrapper
         run: npx tauri-plugin-libmpv-api setup-lib
 
-      - name: Build DMG
-        run: npm run tauri build -- --bundles dmg
+      - name: Build app bundle
+        run: npm run tauri build -- --bundles app
+
+      # Make the .app self-contained:
+      # - the tauri plugin looks for libmpv-wrapper.dylib in exe_dir and exe_dir/lib
+      #   (Contents/MacOS[/lib]), NOT in Contents/Resources where Tauri puts resources;
+      # - the wrapper dlopens "<its own dir>/libmpv.dylib" first, so a patched libmpv
+      #   placed beside it is picked up with no further configuration;
+      # - dylibbundler copies libmpv's whole homebrew dependency closure and rewrites
+      #   all install names to @executable_path/lib so nothing references /opt/homebrew.
+      - name: Embed libmpv into the app bundle
+        run: |
+          set -euxo pipefail
+          APP="src-tauri/target/release/bundle/macos/Vista TV.app"
+          LIBDIR="$APP/Contents/MacOS/lib"
+          mkdir -p "$LIBDIR"
+
+          cp src-tauri/lib/libmpv-wrapper.dylib "$LIBDIR/"
+          cp "$(brew --prefix mpv)/lib/libmpv.2.dylib" "$LIBDIR/libmpv.dylib"
+
+          dylibbundler -cd -b \
+            -x "$LIBDIR/libmpv.dylib" \
+            -d "$LIBDIR" \
+            -p '@executable_path/lib' \
+            -s "$(brew --prefix)/lib"
+
+          # Drop the now-redundant resource copy of the wrapper.
+          rm -rf "$APP/Contents/Resources/lib"
+
+          echo "--- bundled dylibs ---"
+          ls -la "$LIBDIR" | head -80
+
+          # Fail if anything still points at homebrew.
+          if otool -L "$LIBDIR"/*.dylib | grep -E '/opt/homebrew|/usr/local/(opt|Cellar)'; then
+            echo "ERROR: unresolved homebrew references remain" >&2
+            exit 1
+          fi
+
+          # Modifying the bundle invalidated the ad-hoc signature; re-sign.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --verbose=2 "$APP"
+
+      - name: Create DMG
+        run: |
+          set -euxo pipefail
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          STAGE="$(mktemp -d)"
+          cp -R "src-tauri/target/release/bundle/macos/Vista TV.app" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "Vista TV" -srcfolder "$STAGE" -ov -format UDZO \
+            "Vista.TV_${VERSION}_aarch64.dmg"
+          echo "DMG_NAME=Vista.TV_${VERSION}_aarch64.dmg" >> "$GITHUB_ENV"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: VistaTV-macos-aarch64
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: ${{ env.DMG_NAME }}
           if-no-files-found: error
 
       - name: Attach DMG to release
@@ -60,4 +109,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}"
-          gh release upload "$TAG" src-tauri/target/release/bundle/dmg/*.dmg --clobber
+          gh release upload "$TAG" "$DMG_NAME" --clobber
